@@ -169,6 +169,7 @@ impl Preprocessor for CmdPreprocessor {
 mod tests {
     use super::*;
     use crate::MDBook;
+    use crate::build_opts::BuildOpts;
     use std::path::Path;
 
     fn book_example() -> MDBook {
@@ -182,6 +183,7 @@ mod tests {
         let md = book_example();
         let ctx = PreprocessorContext::new(
             md.root.clone(),
+            BuildOpts::default(),
             md.config.clone(),
             "some-renderer".to_string(),
         );
