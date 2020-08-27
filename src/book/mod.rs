@@ -29,6 +29,7 @@ use crate::renderer::{CmdRenderer, HtmlHandlebars, MarkdownRenderer, RenderConte
 use crate::utils;
 
 use crate::config::{Config, RustEdition};
+use crate::build_opts::BuildOpts;
 
 /// The object used to manage and build a book.
 pub struct MDBook {
@@ -38,6 +39,8 @@ pub struct MDBook {
     pub config: Config,
     /// A representation of the book's contents in memory.
     pub book: Book,
+    /// Build options passed from frontend.
+    pub build_opts: BuildOpts,
     renderers: Vec<Box<dyn Renderer>>,
 
     /// List of pre-processors to be run on the book.
@@ -47,6 +50,12 @@ pub struct MDBook {
 impl MDBook {
     /// Load a book from its root directory on disk.
     pub fn load<P: Into<PathBuf>>(book_root: P) -> Result<MDBook> {
+        MDBook::load_with_build_opts(book_root, BuildOpts::default())
+    }
+
+    /// Load a book from its root directory on disk, passing in options from the
+    /// frontend.
+    pub fn load_with_build_opts<P: Into<PathBuf>>(book_root: P, build_opts: BuildOpts) -> Result<MDBook> {
         let book_root = book_root.into();
         let config_location = book_root.join("book.toml");
 
@@ -75,11 +84,11 @@ impl MDBook {
             }
         }
 
-        MDBook::load_with_config(book_root, config)
+        MDBook::load_with_config(book_root, config, build_opts)
     }
 
     /// Load a book from its root directory using a custom `Config`.
-    pub fn load_with_config<P: Into<PathBuf>>(book_root: P, config: Config) -> Result<MDBook> {
+    pub fn load_with_config<P: Into<PathBuf>>(book_root: P, config: Config, build_opts: BuildOpts) -> Result<MDBook> {
         let root = book_root.into();
 
         let src_dir = root.join(&config.book.src);
@@ -92,6 +101,7 @@ impl MDBook {
             root,
             config,
             book,
+            build_opts,
             renderers,
             preprocessors,
         })
@@ -102,6 +112,7 @@ impl MDBook {
         book_root: P,
         config: Config,
         summary: Summary,
+        build_opts: BuildOpts,
     ) -> Result<MDBook> {
         let root = book_root.into();
 
@@ -115,6 +126,7 @@ impl MDBook {
             root,
             config,
             book,
+            build_opts,
             renderers,
             preprocessors,
         })
@@ -185,6 +197,7 @@ impl MDBook {
         let mut preprocessed_book = self.book.clone();
         let preprocess_ctx = PreprocessorContext::new(
             self.root.clone(),
+            self.build_opts.clone(),
             self.config.clone(),
             renderer.name().to_string(),
         );
@@ -201,7 +214,8 @@ impl MDBook {
 
         let mut render_context = RenderContext::new(
             self.root.clone(),
-            preprocessed_book,
+            preprocessed_book.clone(),
+            self.build_opts.clone(),
             self.config.clone(),
             build_dir,
         );
@@ -241,7 +255,7 @@ impl MDBook {
 
         // FIXME: Is "test" the proper renderer name to use here?
         let preprocess_context =
-            PreprocessorContext::new(self.root.clone(), self.config.clone(), "test".to_string());
+            PreprocessorContext::new(self.root.clone(), self.build_opts.clone(), self.config.clone(), "test".to_string());
 
         let book = LinkPreprocessor::new().run(&preprocess_context, self.book.clone())?;
         // Index Preprocessor is disabled so that chapter paths continue to point to the
@@ -332,7 +346,8 @@ impl MDBook {
 
     /// Get the directory containing this book's source files.
     pub fn source_dir(&self) -> PathBuf {
-        self.root.join(&self.config.book.src)
+        let src = self.config.get_localized_src_path(self.build_opts.language_ident.as_ref()).unwrap();
+        self.root.join(src)
     }
 
     /// Get the directory containing the theme resources for the book.

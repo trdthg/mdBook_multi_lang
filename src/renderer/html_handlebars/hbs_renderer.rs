@@ -447,7 +447,7 @@ impl Renderer for HtmlHandlebars {
 
     fn render(&self, ctx: &RenderContext) -> Result<()> {
         let html_config = ctx.config.html_config().unwrap_or_default();
-        let src_dir = ctx.root.join(&ctx.config.book.src);
+        let src_dir = ctx.source_dir();
         let destination = &ctx.destination;
         let book = &ctx.book;
         let build_dir = ctx.root.join(&ctx.config.build.build_dir);
