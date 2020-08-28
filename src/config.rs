@@ -255,7 +255,7 @@ impl Config {
 
     /// Gets the language configured for a book.
     pub fn get_language<I: AsRef<str>>(&self, index: Option<I>) -> Result<Option<String>> {
-        match self.language.default_language() {
+        match self.default_language() {
             // Languages have been specified, assume directory structure with
             // language subfolders.
             Some(ref default) => match index {
@@ -342,7 +342,7 @@ impl Config {
     /// missing in a localization, any links to them will gracefully degrade to
     /// the files that exist in this directory.
     pub fn get_fallback_src_path(&self) -> PathBuf {
-        match self.language.default_language() {
+        match self.default_language() {
             // Languages have been specified, assume directory structure with
             // language subfolders.
             Some(default) => {
@@ -355,6 +355,31 @@ impl Config {
             // No default language was configured in book.toml. Preserve
             // backwards compatibility by just returning `src`.
             None => self.book.src.clone(),
+        }
+    }
+
+    /// If true, mdBook should assume there are subdirectories under src/
+    /// corresponding to the localizations in the config. If false, src/ is a
+    /// single directory containing the summary file and the rest.
+    pub fn has_localized_dir_structure(&self) -> bool {
+        !self.language.0.is_empty()
+    }
+
+    /// Obtains the default language for this config.
+    pub fn default_language(&self) -> Option<String> {
+        if self.has_localized_dir_structure() {
+            let language_ident = self
+                .book
+                .language
+                .clone()
+                .expect("Config has [language] table, but `book.language` not was declared");
+            self.language.0.get(&language_ident).expect(&format!(
+                "Expected [language.{}] to be declared in book.toml",
+                language_ident
+            ));
+            Some(language_ident)
+        } else {
+            None
         }
     }
 
@@ -450,13 +475,28 @@ impl<'de> Deserialize<'de> for Config {
             .unwrap_or_default();
 
         if !language.0.is_empty() {
-            let default_languages = language.0.iter().filter(|(_, lang)| lang.default).count();
-
-            if default_languages != 1 {
+            if book.language.is_none() {
                 use serde::de::Error;
                 return Err(D::Error::custom(
-                    "If [languages] table is specified, exactly one entry must be set as 'default'",
+                    "If the [language] table is specified, then `book.language` must be declared",
                 ));
+            }
+            let language_ident = book.language.clone().unwrap();
+            if language.0.get(&language_ident).is_none() {
+                use serde::de::Error;
+                return Err(D::Error::custom(format!(
+                    "Expected [language.{}] to be declared in book.toml",
+                    language_ident
+                )));
+            }
+            for (ident, language) in language.0.iter() {
+                if language.name.is_empty() {
+                    use serde::de::Error;
+                    return Err(D::Error::custom(format!(
+                        "`name` property for [language.{}] must be non-empty",
+                        ident
+                    )));
+                }
             }
         }
 
@@ -484,7 +524,8 @@ impl Serialize for Config {
         }
 
         if !self.language.0.is_empty() {
-            let language_config = Value::try_from(&self.language).expect("should always be serializable");
+            let language_config =
+                Value::try_from(&self.language).expect("should always be serializable");
             table.insert("language", language_config);
         }
 
@@ -535,9 +576,7 @@ pub struct BookConfig {
     pub description: Option<String>,
     /// Location of the book source relative to the book's root directory.
     pub src: PathBuf,
-    /// Does this book support more than one language? (Deprecated.)
-    pub multilingual: bool,
-    /// The main language of the book. (Deprecated.)
+    /// The main language of the book.
     pub language: Option<String>,
 }
 
@@ -548,7 +587,6 @@ impl Default for BookConfig {
             authors: Vec::new(),
             description: None,
             src: PathBuf::from("src"),
-            multilingual: true,
             language: Some(String::from("en")),
         }
     }
@@ -789,9 +827,6 @@ pub struct LanguageConfig(pub HashMap<String, Language>);
 pub struct Language {
     /// Human-readable name of the language.
     pub name: String,
-    /// If true, this language is the default. There must be exactly one default
-    /// language in the config.
-    pub default: bool,
     /// Localized title of the book.
     pub title: Option<String>,
     /// The authors of the translation.
@@ -800,22 +835,7 @@ pub struct Language {
     pub description: Option<String>,
 }
 
-impl LanguageConfig {
-    /// If true, mdBook should assume there are subdirectories under src/
-    /// corresponding to the localizations in the config. If false, src/ is a
-    /// single directory containing the summary file and the rest.
-    pub fn has_localized_dir_structure(&self) -> bool {
-        self.default_language().is_some()
-    }
-
-    /// Returns the default language specified in the config.
-    pub fn default_language(&self) -> Option<&String> {
-        self.0
-            .iter()
-            .find(|(_, lang)| lang.default)
-            .map(|(lang_ident, _)| lang_ident)
-    }
-}
+impl LanguageConfig {}
 
 /// Allows you to "update" any arbitrary field in a struct by round-tripping via
 /// a `toml::Value`.
@@ -882,7 +902,6 @@ mod tests {
 
         [language.en]
         name = "English"
-        default = true
 
         [language.ja]
         name = "日本語"
@@ -899,7 +918,6 @@ mod tests {
             title: Some(String::from("Some Book")),
             authors: vec![String::from("Michael-F-Bryan <michaelfbryan@gmail.com>")],
             description: Some(String::from("A completely useless book")),
-            multilingual: true,
             src: PathBuf::from("source"),
             language: Some(String::from("ja")),
         };
@@ -940,7 +958,6 @@ mod tests {
             String::from("en"),
             Language {
                 name: String::from("English"),
-                default: true,
                 title: None,
                 description: None,
                 authors: None,
@@ -950,7 +967,6 @@ mod tests {
             String::from("ja"),
             Language {
                 name: String::from("日本語"),
-                default: false,
                 title: Some(String::from("なんかの本")),
                 description: Some(String::from("何の役にも立たない本")),
                 authors: Some(vec![String::from("Ruin0x11")]),
@@ -1239,10 +1255,10 @@ mod tests {
     }
 
     #[test]
-    fn validate_default_language() {
+    fn validate_config_default_language_must_exist_in_languages_table() {
         let src = r#"
-        [language.en]
-        name = "English"
+        [language.ja]
+        name = "日本語"
         "#;
 
         let got = Config::from_str(src);
@@ -1250,15 +1266,12 @@ mod tests {
     }
 
     #[test]
-    fn validate_default_language_2() {
+    fn validate_language_config_must_have_name() {
         let src = r#"
-        [language.en]
-        name = "English"
-        default = true
+        [book]
+        language = "en"
 
-        [language.fr]
-        name = "Français"
-        default = true
+        [language.en]
         "#;
 
         let got = Config::from_str(src);
