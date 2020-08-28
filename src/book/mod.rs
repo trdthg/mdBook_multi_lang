@@ -10,15 +10,15 @@ mod book;
 mod init;
 mod summary;
 
-pub use self::book::{load_book, BookItem, BookItems, Chapter, Book, LocalizedBooks, LoadedBook};
+pub use self::book::{load_book, Book, BookItem, BookItems, Chapter, LoadedBook, LocalizedBooks};
 pub use self::init::BookBuilder;
 pub use self::summary::{parse_summary, Link, SectionNumber, Summary, SummaryItem};
 
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
 use std::string::ToString;
-use std::collections::HashMap;
 use tempfile::Builder as TempFileBuilder;
 use tempfile::TempDir;
 use toml::Value;
@@ -131,8 +131,12 @@ impl MDBook {
                 .unwrap(),
         );
         let fallback_src_dir = root.join(config.get_fallback_src_path());
-        let book =
-            LoadedBook::Single(book::load_book_from_disk(&summary, localized_src_dir, fallback_src_dir, &config)?);
+        let book = LoadedBook::Single(book::load_book_from_disk(
+            &summary,
+            localized_src_dir,
+            fallback_src_dir,
+            &config,
+        )?);
 
         let renderers = determine_renderers(&config);
         let preprocessors = determine_preprocessors(&config)?;
@@ -207,7 +211,12 @@ impl MDBook {
         Ok(())
     }
 
-    fn preprocess(&self, preprocess_ctx: &PreprocessorContext, renderer: &dyn Renderer, book: Book) -> Result<Book> {
+    fn preprocess(
+        &self,
+        preprocess_ctx: &PreprocessorContext,
+        renderer: &dyn Renderer,
+        book: Book,
+    ) -> Result<Book> {
         let mut preprocessed_book = book;
         for preprocessor in &self.preprocessors {
             if preprocessor_should_run(&**preprocessor, renderer, &self.config) {
@@ -232,13 +241,16 @@ impl MDBook {
                 let mut new_books = HashMap::new();
 
                 for (ident, book) in books.0.iter() {
-                    let preprocessed_book = self.preprocess(&preprocess_ctx, renderer, book.clone())?;
+                    let preprocessed_book =
+                        self.preprocess(&preprocess_ctx, renderer, book.clone())?;
                     new_books.insert(ident.clone(), preprocessed_book);
                 }
 
                 LoadedBook::Localized(LocalizedBooks(new_books))
-            },
-            LoadedBook::Single(ref book) => LoadedBook::Single(self.preprocess(&preprocess_ctx, renderer, book.clone())?),
+            }
+            LoadedBook::Single(ref book) => {
+                LoadedBook::Single(self.preprocess(&preprocess_ctx, renderer, book.clone())?)
+            }
         };
 
         info!("Running the {} backend", renderer.name());
@@ -350,8 +362,8 @@ impl MDBook {
                 for (_, book) in books.0.iter() {
                     self.test_book(book, &temp_dir, &library_args)?;
                 }
-            },
-            LoadedBook::Single(ref book) => self.test_book(&book, &temp_dir, &library_args)?
+            }
+            LoadedBook::Single(ref book) => self.test_book(&book, &temp_dir, &library_args)?,
         }
 
         Ok(())

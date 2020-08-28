@@ -18,27 +18,37 @@ pub fn load_book<P: AsRef<Path>>(
     if cfg.language.has_localized_dir_structure() {
         match build_opts.language_ident {
             // Build a single book's translation.
-            Some(_) => Ok(LoadedBook::Single(load_single_book_translation(&root_dir, cfg, &build_opts.language_ident)?)),
+            Some(_) => Ok(LoadedBook::Single(load_single_book_translation(
+                &root_dir,
+                cfg,
+                &build_opts.language_ident,
+            )?)),
             // Build all available translations at once.
             None => {
                 let mut translations = HashMap::new();
                 for (lang_ident, _) in cfg.language.0.iter() {
-                    let book = load_single_book_translation(&root_dir, cfg, &Some(lang_ident.clone()))?;
+                    let book =
+                        load_single_book_translation(&root_dir, cfg, &Some(lang_ident.clone()))?;
                     translations.insert(lang_ident.clone(), book);
                 }
                 Ok(LoadedBook::Localized(LocalizedBooks(translations)))
             }
         }
     } else {
-        Ok(LoadedBook::Single(load_single_book_translation(&root_dir, cfg, &None)?))
+        Ok(LoadedBook::Single(load_single_book_translation(
+            &root_dir, cfg, &None,
+        )?))
     }
 }
 
-fn load_single_book_translation<P: AsRef<Path>>(root_dir: P, cfg: &Config, language_ident: &Option<String>) -> Result<Book> {
-    let localized_src_dir = root_dir.as_ref().join(
-        cfg.get_localized_src_path(language_ident.as_ref())
-           .unwrap(),
-    );
+fn load_single_book_translation<P: AsRef<Path>>(
+    root_dir: P,
+    cfg: &Config,
+    language_ident: &Option<String>,
+) -> Result<Book> {
+    let localized_src_dir = root_dir
+        .as_ref()
+        .join(cfg.get_localized_src_path(language_ident.as_ref()).unwrap());
     let fallback_src_dir = root_dir.as_ref().join(cfg.get_fallback_src_path());
 
     let summary_md = localized_src_dir.join("SUMMARY.md");
@@ -46,7 +56,7 @@ fn load_single_book_translation<P: AsRef<Path>>(root_dir: P, cfg: &Config, langu
     let mut summary_content = String::new();
     File::open(summary_md)
         .with_context(|| "Couldn't open SUMMARY.md")?
-    .read_to_string(&mut summary_content)?;
+        .read_to_string(&mut summary_content)?;
 
     let summary = parse_summary(&summary_content).with_context(|| "Summary parsing failed")?;
 
@@ -145,9 +155,7 @@ impl LocalizedBooks {
             items.extend(book.iter().items);
         }
 
-        BookItems {
-            items: items
-        }
+        BookItems { items: items }
     }
 
     /// Recursively apply a closure to each item in the book, allowing you to
@@ -212,7 +220,7 @@ impl LoadedBook {
     pub fn first(&self) -> &Book {
         match self {
             LoadedBook::Localized(books) => books.0.iter().next().unwrap().1,
-            LoadedBook::Single(book) => &book
+            LoadedBook::Single(book) => &book,
         }
     }
 }
@@ -561,7 +569,7 @@ more text.
             Vec::new(),
             &cfg,
         )
-            .unwrap();
+        .unwrap();
         assert_eq!(got, should_be);
     }
 
