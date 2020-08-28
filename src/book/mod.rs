@@ -10,7 +10,7 @@ mod book;
 mod init;
 mod summary;
 
-pub use self::book::{load_book, Book, BookItem, BookItems, Chapter};
+pub use self::book::{load_book, BookItem, BookItems, Chapter, Book, LocalizedBooks, LoadedBook};
 pub use self::init::BookBuilder;
 pub use self::summary::{parse_summary, Link, SectionNumber, Summary, SummaryItem};
 
@@ -18,7 +18,9 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
 use std::string::ToString;
+use std::collections::HashMap;
 use tempfile::Builder as TempFileBuilder;
+use tempfile::TempDir;
 use toml::Value;
 
 use crate::errors::*;
@@ -37,8 +39,9 @@ pub struct MDBook {
     pub root: PathBuf,
     /// The configuration used to tweak now a book is built.
     pub config: Config,
-    /// A representation of the book's contents in memory.
-    pub book: Book,
+    /// A representation of the book's contents in memory. Can be a single book,
+    /// or multiple books in different languages.
+    pub book: LoadedBook,
     /// Build options passed from frontend.
     pub build_opts: BuildOpts,
     renderers: Vec<Box<dyn Renderer>>,
@@ -129,7 +132,7 @@ impl MDBook {
         );
         let fallback_src_dir = root.join(config.get_fallback_src_path());
         let book =
-            book::load_book_from_disk(&summary, localized_src_dir, fallback_src_dir, &config)?;
+            LoadedBook::Single(book::load_book_from_disk(&summary, localized_src_dir, fallback_src_dir, &config)?);
 
         let renderers = determine_renderers(&config);
         let preprocessors = determine_preprocessors(&config)?;
@@ -204,9 +207,19 @@ impl MDBook {
         Ok(())
     }
 
+    fn preprocess(&self, preprocess_ctx: &PreprocessorContext, renderer: &dyn Renderer, book: Book) -> Result<Book> {
+        let mut preprocessed_book = book;
+        for preprocessor in &self.preprocessors {
+            if preprocessor_should_run(&**preprocessor, renderer, &self.config) {
+                debug!("Running the {} preprocessor.", preprocessor.name());
+                preprocessed_book = preprocessor.run(&preprocess_ctx, preprocessed_book)?;
+            }
+        }
+        Ok(preprocessed_book)
+    }
+
     /// Run the entire build process for a particular `Renderer`.
     pub fn execute_build_process(&self, renderer: &dyn Renderer) -> Result<()> {
-        let mut preprocessed_book = self.book.clone();
         let preprocess_ctx = PreprocessorContext::new(
             self.root.clone(),
             self.build_opts.clone(),
@@ -214,26 +227,33 @@ impl MDBook {
             renderer.name().to_string(),
         );
 
-        for preprocessor in &self.preprocessors {
-            if preprocessor_should_run(&**preprocessor, renderer, &self.config) {
-                debug!("Running the {} preprocessor.", preprocessor.name());
-                preprocessed_book = preprocessor.run(&preprocess_ctx, preprocessed_book)?;
-            }
-        }
+        let preprocessed_books = match &self.book {
+            LoadedBook::Localized(ref books) => {
+                let mut new_books = HashMap::new();
+
+                for (ident, book) in books.0.iter() {
+                    let preprocessed_book = self.preprocess(&preprocess_ctx, renderer, book.clone())?;
+                    new_books.insert(ident.clone(), preprocessed_book);
+                }
+
+                LoadedBook::Localized(LocalizedBooks(new_books))
+            },
+            LoadedBook::Single(ref book) => LoadedBook::Single(self.preprocess(&preprocess_ctx, renderer, book.clone())?),
+        };
 
         info!("Running the {} backend", renderer.name());
-        self.render(&preprocessed_book, renderer)?;
+        self.render(&preprocessed_books, renderer)?;
 
         Ok(())
     }
 
-    fn render(&self, preprocessed_book: &Book, renderer: &dyn Renderer) -> Result<()> {
+    fn render(&self, preprocessed_books: &LoadedBook, renderer: &dyn Renderer) -> Result<()> {
         let name = renderer.name();
         let build_dir = self.build_dir_for(name);
 
         let render_context = RenderContext::new(
             self.root.clone(),
-            preprocessed_book.clone(),
+            preprocessed_books.clone(),
             self.build_opts.clone(),
             self.config.clone(),
             build_dir,
@@ -258,16 +278,7 @@ impl MDBook {
         self
     }
 
-    /// Run `rustdoc` tests on the book, linking against the provided libraries.
-    pub fn test(&mut self, library_paths: Vec<&str>) -> Result<()> {
-        let library_args: Vec<&str> = (0..library_paths.len())
-            .map(|_| "-L")
-            .zip(library_paths.into_iter())
-            .flat_map(|x| vec![x.0, x.1])
-            .collect();
-
-        let temp_dir = TempFileBuilder::new().prefix("mdbook-").tempdir()?;
-
+    fn test_book(&self, book: &Book, temp_dir: &TempDir, library_args: &Vec<&str>) -> Result<()> {
         // FIXME: Is "test" the proper renderer name to use here?
         let preprocess_context = PreprocessorContext::new(
             self.root.clone(),
@@ -275,8 +286,7 @@ impl MDBook {
             self.config.clone(),
             "test".to_string(),
         );
-
-        let book = LinkPreprocessor::new().run(&preprocess_context, self.book.clone())?;
+        let book = LinkPreprocessor::new().run(&preprocess_context, book.clone())?;
         // Index Preprocessor is disabled so that chapter paths continue to point to the
         // actual markdown files.
 
@@ -296,7 +306,7 @@ impl MDBook {
                 tmpf.write_all(ch.content.as_bytes())?;
 
                 let mut cmd = Command::new("rustdoc");
-                cmd.arg(&path).arg("--test").args(&library_args);
+                cmd.arg(&path).arg("--test").args(library_args);
 
                 if let Some(edition) = self.config.rust.edition {
                     match edition {
@@ -321,6 +331,29 @@ impl MDBook {
                 }
             }
         }
+
+        Ok(())
+    }
+
+    /// Run `rustdoc` tests on the book, linking against the provided libraries.
+    pub fn test(&self, library_paths: Vec<&str>) -> Result<()> {
+        let library_args: Vec<&str> = (0..library_paths.len())
+            .map(|_| "-L")
+            .zip(library_paths.into_iter())
+            .flat_map(|x| vec![x.0, x.1])
+            .collect();
+
+        let temp_dir = TempFileBuilder::new().prefix("mdbook-").tempdir()?;
+
+        match self.book {
+            LoadedBook::Localized(ref books) => {
+                for (_, book) in books.0.iter() {
+                    self.test_book(book, &temp_dir, &library_args)?;
+                }
+            },
+            LoadedBook::Single(ref book) => self.test_book(&book, &temp_dir, &library_args)?
+        }
+
         Ok(())
     }
 
