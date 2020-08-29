@@ -183,6 +183,7 @@ mod tests {
         let md = book_example();
         let ctx = PreprocessorContext::new(
             md.root.clone(),
+            None,
             BuildOpts::default(),
             md.config.clone(),
             "some-renderer".to_string(),
