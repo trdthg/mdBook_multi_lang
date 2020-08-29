@@ -1008,6 +1008,7 @@ mod tests {
         assert_eq!(got.rust, rust_should_be);
         assert_eq!(got.html_config().unwrap(), html_should_be);
         assert_eq!(got.language, language_should_be);
+        assert_eq!(got.default_language(), Some(String::from("ja")));
     }
 
     #[test]
@@ -1283,7 +1284,18 @@ mod tests {
     }
 
     #[test]
-    fn validate_config_default_language_must_exist_in_languages_table() {
+    fn book_language_without_languages_table() {
+        let src = r#"
+        [book]
+        language = "en"
+        "#;
+
+        let got = Config::from_str(src).unwrap();
+        assert_eq!(got.default_language(), None);
+    }
+
+    #[test]
+    fn default_language_must_exist_in_languages_table() {
         let src = r#"
         [language.ja]
         name = "日本語"
@@ -1294,7 +1306,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_language_config_must_have_name() {
+    fn language_must_have_name() {
         let src = r#"
         [book]
         language = "en"
